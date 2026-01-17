@@ -199,17 +199,32 @@ class GPT(nn.Module):
     self.r_emb = nn.Embedding(config.max_r + 1, node_embd)
 
     # State projection: concatenate [query(128), node(32), k(32), r(32)] -> n_embd
+    # Multi-layer projection for gradual dimension reduction
     state_input_dim = config.query_dim + node_embd + node_embd + node_embd  # 128 + 32 + 32 + 32 = 224
+    hidden_dim = max(state_input_dim // 2, config.n_embd)
+    mid_dim = (hidden_dim + config.n_embd) // 2
     self.state_proj = nn.Sequential(
-      nn.Linear(state_input_dim, config.n_embd),
-      nn.Tanh()
+      nn.Linear(state_input_dim, hidden_dim),
+      nn.Tanh(),
+      nn.Linear(hidden_dim, mid_dim),
+      nn.Tanh(),
+      nn.Linear(mid_dim, config.n_embd)
     )
 
     # Action projection: node_embd -> n_embd (reuses node_embeddings)
-    self.action_proj = nn.Sequential(
-      nn.Linear(node_embd, config.n_embd),
-      nn.Tanh()
-    )
+    # Multi-layer if the dimension gap is large
+    if config.n_embd > node_embd * 2:
+      action_mid_dim = (node_embd + config.n_embd) // 2
+      self.action_proj = nn.Sequential(
+        nn.Linear(node_embd, action_mid_dim),
+        nn.Tanh(),
+        nn.Linear(action_mid_dim, config.n_embd)
+      )
+    else:
+      self.action_proj = nn.Sequential(
+        nn.Linear(node_embd, config.n_embd),
+        nn.Tanh()
+      )
 
     # Positional embeddings (local position within sequence)
     self.pos_emb = nn.Parameter(torch.zeros(1, config.block_size + 1, config.n_embd))
@@ -220,9 +235,17 @@ class GPT(nn.Module):
     # Transformer blocks
     self.blocks = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
 
-    # Final layer norm and output head
+    # Final layer norm
     self.ln_f = nn.LayerNorm(config.n_embd)
-    self.head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+    # Output projection: n_embd -> node_embd (for weight tying with node embeddings)
+    # If n_embd == node_embd, this is just identity-like
+    if config.n_embd != node_embd:
+      self.output_proj = nn.Linear(config.n_embd, node_embd, bias=False)
+    else:
+      self.output_proj = None
+
+    # Weight tying: Use node_embeddings.weight for output (no separate head layer)
 
     self.block_size = config.block_size
     self.apply(self._init_weights)
@@ -373,7 +396,14 @@ class GPT(nn.Module):
       x = block(x, padding_mask)
 
     x = self.ln_f(x)
-    logits = self.head(x)
+
+    # Weight tying: project to node_embd if needed, then use node embeddings for output
+    if self.output_proj is not None:
+      x = self.output_proj(x)  # (batch, seq_len, node_embd)
+
+    # Compute logits via dot product with node embeddings (weight tying)
+    # x: (batch, seq_len, node_embd), node_embeddings.weight: (vocab_size, node_embd)
+    logits = torch.matmul(x, self.node_embeddings.weight.t())  # (batch, seq_len, vocab_size)
 
     # Extract logits at state positions (we predict action after seeing state)
     if actions is not None:

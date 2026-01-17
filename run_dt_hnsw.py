@@ -104,7 +104,7 @@ class HNSWTrajectoryDataset(Dataset):
 
     # Number of (state, action) pairs = len(path) - 1
     # At step t: state is current node, action is next node
-    seq_len = len(path) - 1
+    seq_len = min(len(path) - 1, self.max_seq_len)
 
     # Initialize padded arrays
     states = np.zeros((self.max_seq_len, 128), dtype=np.float32)
@@ -216,6 +216,7 @@ def main(args):
     n_layer=args.n_layer,
     n_head=args.n_head,
     n_embd=args.n_embd,
+    node_embd=args.node_embd,  # Separate (smaller) embedding for node IDs
     query_dim=128,  # SIFT feature dimension
     max_timestep=max_seq_len,
     max_k=100,  # Maximum k for conditioning (-1 to 100)
@@ -228,7 +229,8 @@ def main(args):
   # Log model info
   n_params = sum(p.numel() for p in model.parameters())
   logger.info(f"Model parameters: {n_params:,}")
-  logger.info(f"Node embedding size: {vocab_size * args.n_embd * 4 / 1e6:.1f} MB")
+  logger.info(f"Node embedding: {vocab_size} x {args.node_embd} = {vocab_size * args.node_embd * 4 / 1e6:.1f} MB (shared for states & actions)")
+  logger.info(f"State projection: {128 + 3*args.node_embd} -> {args.n_embd}")
 
   # Trainer configuration
   tconf = TrainerConfig(
@@ -260,7 +262,8 @@ if __name__ == '__main__':
   parser.add_argument('--batch_size', type=int, default=128, help='Training batch size')
   parser.add_argument('--n_layer', type=int, default=6, help='Number of transformer layers')
   parser.add_argument('--n_head', type=int, default=8, help='Number of attention heads')
-  parser.add_argument('--n_embd', type=int, default=128, help='Embedding dimension')
+  parser.add_argument('--n_embd', type=int, default=128, help='Transformer embedding dimension')
+  parser.add_argument('--node_embd', type=int, default=32, help='Node ID embedding dimension (smaller than n_embd)')
   parser.add_argument('--learning_rate', type=float, default=6e-4, help='Learning rate')
   parser.add_argument('--data_dir', type=str, required=True, help='Directory containing dataset files')
   parser.add_argument('--max_trajectories', type=int, default=None, help='Maximum trajectories to load (None for all)')

@@ -205,7 +205,16 @@ def main(args):
     max_seq_len,
     vocab_size
   )
-  logger.info(f"Training dataset size: {len(train_dataset)}")
+  logger.info(f"Full training dataset size: {len(train_dataset)}")
+
+  # Limit training samples if specified
+  if args.max_train_samples is not None:
+    # Randomly select subset of training samples
+    from torch.utils.data import Subset
+    import random
+    indices = random.sample(range(len(train_dataset)), min(args.max_train_samples, len(train_dataset)))
+    train_dataset = Subset(train_dataset, indices)
+    logger.info(f"Limited training dataset to {len(train_dataset)} samples")
 
   # Model configuration
   # block_size = max_seq_len * 2 for interleaved [state, action, state, action, ...]
@@ -233,17 +242,20 @@ def main(args):
   logger.info(f"State projection: {128 + 3*args.node_embd} -> {args.n_embd}")
 
   # Trainer configuration
+  # final_tokens = 2 * num_samples * max_seq_len (for interleaved state-action format)
+  final_tokens = 2 * len(train_dataset) * max_seq_len
   tconf = TrainerConfig(
     max_epochs=args.epochs,
     batch_size=args.batch_size,
     learning_rate=args.learning_rate,
     lr_decay=args.lr_decay,
     warmup_tokens=512 * 20,
-    final_tokens=2 * len(train_dataset) * max_seq_len,
+    final_tokens=final_tokens,
     num_workers=args.num_workers,
     seed=args.seed,
     ckpt_dir=args.ckpt_dir,
   )
+  logger.info(f"Training config: epochs={args.epochs}, batch_size={args.batch_size}, final_tokens={final_tokens}")
 
   # Create trainer and train
   logger.info("Starting training...")
@@ -266,7 +278,8 @@ if __name__ == '__main__':
   parser.add_argument('--node_embd', type=int, default=32, help='Node ID embedding dimension (smaller than n_embd)')
   parser.add_argument('--learning_rate', type=float, default=6e-4, help='Learning rate')
   parser.add_argument('--data_dir', type=str, required=True, help='Directory containing dataset files')
-  parser.add_argument('--max_trajectories', type=int, default=None, help='Maximum trajectories to load (None for all)')
+  parser.add_argument('--max_trajectories', type=int, default=None, help='Maximum trajectories to load from file (None for all)')
+  parser.add_argument('--max_train_samples', type=int, default=None, help='Maximum training samples to use (None for all, useful for quick testing)')
   parser.add_argument('--ckpt_dir', type=str, default='./checkpoints', help='Checkpoint directory')
   parser.add_argument('--num_workers', type=int, default=4, help='DataLoader workers')
   parser.add_argument('--lr_decay', action='store_true', help='Use learning rate decay')
